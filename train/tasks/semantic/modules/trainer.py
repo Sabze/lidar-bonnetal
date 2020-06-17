@@ -22,9 +22,10 @@ from common.logger import Logger
 from common.avgmeter import *
 from common.sync_batchnorm.batchnorm import convert_model
 from common.warmupLR import *
+from common.early_stopping import EarlyStopping
 from tasks.semantic.modules.segmentator import *
 from tasks.semantic.modules.ioueval import *
-
+from common.train_logger import TrainLogger
 
 class Trainer():
   def __init__(self, ARCH, DATA, datadir, logdir, path=None):
@@ -37,6 +38,7 @@ class Trainer():
 
     # put logger where it belongs
     self.tb_logger = Logger(self.log + "/tb")
+    self.train_logger = TrainLogger(self.log)
     self.info = {"train_update": 0,
                  "train_loss": 0,
                  "train_acc": 0,
@@ -66,7 +68,12 @@ class Trainer():
                                       batch_size=self.ARCH["train"]["batch_size"],
                                       workers=self.ARCH["train"]["workers"],
                                       gt=True,
-                                      shuffle_train=True)
+                                      shuffle_train=True,
+                                      weighted_data = self.ARCH["weighted_sampling"]["use"],
+                                      label_weights = self.ARCH["weighted_sampling"]["weights"],
+                                      data_augmentation= self.ARCH["data_augmentation"]["use"],
+                                      augmentation_params=self.ARCH["data_augmentation"]["params"]
+                                      )
 
     # weights for loss (and bias)
     # weights for loss (and bias)
@@ -75,13 +82,25 @@ class Trainer():
     for cl, freq in DATA["content"].items():
       x_cl = self.parser.to_xentropy(cl)  # map actual class to xentropy class
       content[x_cl] += freq
-    self.loss_w = 1 / (content + epsilon_w)   # get weights
+    if ARCH["loss_weights"]["frequency"]:
+        print("Using frequency loss-weights")
+        self.loss_w = 1 / (content + epsilon_w)   # get weights
+    elif ARCH["loss_weights"]["logbased"]:
+        print("Using log-based loss-weights")
+        self.loss_w = 1/np.log(epsilon_w + content)
+    elif ARCH["loss_weights"]["noweights"]:
+        print("Using no loss-weights")
+        self.loss_w = torch.ones(self.parser.get_n_classes(), dtype=torch.float)
+    else:
+        print("NO LOSS FUNCTION THAT MATCHES, using frequency based")
+        self.train_logger.warning("NO LOSS FUNCTION THAT MATCHES, using frequency based", -1)
+        self.loss_w = 1 / (content + epsilon_w)
     for x_cl, w in enumerate(self.loss_w):  # ignore the ones necessary to ignore
       if DATA["learning_ignore"][x_cl]:
         # don't weigh
         self.loss_w[x_cl] = 0
     print("Loss weights from content: ", self.loss_w.data)
-
+    self.train_logger.info("Loss weights from content: {data}".format(data=self.loss_w.data), -1)
     # concatenate the encoder and the head
     with torch.no_grad():
       self.model = Segmentator(self.ARCH,
@@ -96,7 +115,7 @@ class Trainer():
     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Training in device: ", self.device)
     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-      cudnn.benchmark = True
+      #cudnn.benchmark = True
       cudnn.fastest = True
       self.gpu = True
       self.n_gpus = 1
@@ -154,6 +173,22 @@ class Trainer():
                               momentum=self.ARCH["train"]["momentum"],
                               decay=final_decay)
 
+    if self.ARCH["early_stopping"]["use"]:
+        if self.ARCH["train"]["report_epoch"] != 1:
+            print("Not using Early Stopping: Early stopping is not supported for report_epoch != 1")
+            self.early_stopping = None
+        else:
+            self.early_stopping_type = self.ARCH["early_stopping"]["params"]["type"]
+            self.early_stopping = EarlyStopping(self.ARCH["early_stopping"]["params"], self.log)
+
+    else:
+        self.early_stopping = None
+
+    self.class_iou = {}
+    for key, ind in self.DATA["learning_map_inv"].items():
+        self.class_iou["z_iou_"+self.DATA["labels"][ind]] = 0
+
+
   @staticmethod
   def get_mpl_colormap(cmap_name):
     cmap = plt.get_cmap(cmap_name)
@@ -180,6 +215,7 @@ class Trainer():
     out_img = np.concatenate([out_img, gt_color], axis=0)
     return (out_img).astype(np.uint8)
 
+
   @staticmethod
   def save_to_log(logdir, logger, info, epoch, w_summary=False, model=None, img_summary=False, imgs=[]):
     # save scalars
@@ -202,6 +238,9 @@ class Trainer():
       for i, img in enumerate(imgs):
         name = os.path.join(directory, str(i) + ".png")
         cv2.imwrite(name, img)
+
+
+
 
   def train(self):
     # accuracy and IoU stuff
@@ -240,7 +279,7 @@ class Trainer():
       self.info["train_loss"] = loss
       self.info["train_acc"] = acc
       self.info["train_iou"] = iou
-
+      self.train_logger.info("{iou:.3f}".format(iou=iou), epoch)
       # remember best iou and save checkpoint
       if iou > best_train_iou:
         print("Best mean iou in training set so far, save model!")
@@ -262,13 +301,17 @@ class Trainer():
         self.info["valid_loss"] = loss
         self.info["valid_acc"] = acc
         self.info["valid_iou"] = iou
-
+        # Update early stopping if we are using it
+        if self.early_stopping is not None:
+            if self.early_stopping_type == "iou":
+                self.early_stopping.update(iou, epoch)
+            elif self.early_stopping == "loss":
+                self.early_stopping.update(loss, epoch)
         # remember best iou and save checkpoint
         if iou > best_val_iou:
           print("Best mean iou in validation so far, save model!")
           print("*" * 80)
           best_val_iou = iou
-
           # save the weights!
           self.model_single.save_checkpoint(self.log, suffix="")
 
@@ -283,7 +326,16 @@ class Trainer():
                             model=self.model_single,
                             img_summary=self.ARCH["train"]["save_scans"],
                             imgs=rand_img)
+        Trainer.save_to_log(logdir=self.log,
+                            logger=self.tb_logger,
+                            info=self.class_iou,
+                            epoch=epoch,)
 
+        # If we are using early stopping, stop training when early_stop is true
+        if (self.early_stopping is not None) and self.early_stopping.early_stop:
+          break
+
+    self.train_logger.success()
     print('Finished Training')
 
     return
@@ -450,7 +502,10 @@ class Trainer():
                                            acc=acc, iou=iou))
       # print also classwise
       for i, jacc in enumerate(class_jaccard):
+        self.class_iou["z_iou_"+class_func(i)] = jacc
         print('IoU class {i:} [{class_str:}] = {jacc:.3f}'.format(
             i=i, class_str=class_func(i), jacc=jacc))
 
     return acc.avg, iou.avg, losses.avg, rand_imgs
+
+

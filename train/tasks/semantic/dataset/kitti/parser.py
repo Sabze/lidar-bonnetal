@@ -2,11 +2,15 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data import WeightedRandomSampler
 from common.laserscan import LaserScan, SemLaserScan
+import random
+from torchvision import transforms
 
 EXTENSIONS_SCAN = ['.bin']
 EXTENSIONS_LABEL = ['.label']
 
+# TODO: Create a different parser/dataloader for the UAV data
 
 def is_scan(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_SCAN)
@@ -14,6 +18,134 @@ def is_scan(filename):
 
 def is_label(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_LABEL)
+
+class HeightChange(object):
+    def __init__(self, params):
+        self.max_height_diff, self.max_angle_diff, self.augm_prob, self.color_map = params
+
+    def __call__(self, scan):
+        prob = random.random()
+        if prob > self.augm_prob:
+            return scan
+        else:
+            diff = random.uniform(-self.max_height_diff, self.max_height_diff)
+            points = scan.points + np.array([diff, 0, 0])
+            theta = np.arcsin(scan.points[:, 2] / np.linalg.norm(scan.points, axis=1))
+            fov_up = np.min([np.max(theta) * 180 / np.pi, scan.proj_fov_up + self.max_angle_diff])
+            fov_down = np.max([np.min(theta) * 180 / np.pi, scan.proj_fov_down - self.max_angle_diff])
+            new_laserscan = SemLaserScan(self.color_map,
+                                         project=scan.project,
+                                         H=scan.proj_H,
+                                         W=scan.proj_W,
+                                         fov_up=fov_up,
+                                         fov_down=fov_down)
+            new_laserscan.set_points(points, scan.remissions)
+            return new_laserscan
+
+class Flip(object):
+    def __init__(self, params):
+        self.augm_prob, self.color_map = params
+
+    def __call__(self, scan):
+        v_prob = random.random()
+        h_prob = random.random()
+        if v_prob > self.augm_prob and h_prob > self.augm_prob:
+            return scan
+        else:
+            v_flip = True
+            h_flip = True
+            if v_prob > self.augm_prob:
+                v_flip = False
+            if h_flip > self.augm_prob:
+                h_flip = False
+            new_laserscan = SemLaserScan(self.color_map,
+                                         project=scan.project,
+                                         H=scan.proj_H,
+                                         W=scan.proj_W,
+                                         fov_up=scan.proj_fov_up,
+                                         fov_down=scan.proj_fov_down, h_flip=h_flip, v_flip=v_flip)
+            new_laserscan.set_points(scan.points, scan.remissions)
+            return new_laserscan
+
+class Translate(object):
+    """ Change the view-point of the points.
+    Default parameters changes the view point to the one for the UAV data."""
+    def __init__(self, params):
+        self.augment, self.x, self.z, self.angle = params
+
+    def translate_points(self, points, yangle=-1.25*np.pi/2, x=13, z=-5):
+        if self.augment:
+            # Random augment
+            xdiff = random.uniform(-self.x, self.x)
+            zdiff = random.uniform(-self.z, self.z)
+            angle_diff = random.uniform(-self.angle, self.angle)
+            x += xdiff
+            z += zdiff
+            yangle += angle_diff
+        # Translate the points
+        cosvert = np.cos(yangle)
+        sinvert = np.sin(yangle)
+        rot_matrix = np.array([[cosvert, 0, sinvert],
+                               [0, 1, 0],
+                               [-sinvert, 0, cosvert]])
+
+        rotated_points = (rot_matrix @ (points.T)).T
+        # Move the x and z points.
+        translated_points = rotated_points + [x, 0, z]
+        return translated_points
+
+    def __call__(self, scan):
+        translated_points = self.translate_points(scan.points)
+        scan.overwrite_points(translated_points)
+        return scan
+
+
+def get_scan_weights(root, sequences, class_weights):
+    """ Calculate the weights used in the weighted sampling."""
+    root = os.path.join(root, "sequences")
+    all_labels_files = []
+    for seq in sequences:
+        # to string
+        seq = '{0:02d}'.format(int(seq))
+        print("creating weights for seq {}".format(seq))
+
+        # get paths for each
+        scan_path = os.path.join(root, seq, "velodyne")
+        label_path = os.path.join(root, seq, "labels")
+
+        # get files
+        scan_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(
+          os.path.expanduser(scan_path)) for f in fn if is_scan(f)]
+        label_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(
+          os.path.expanduser(label_path)) for f in fn if is_label(f)]
+        assert(len(scan_files) == len(label_files))
+        # extend list
+        all_labels_files.extend(label_files)
+    all_labels_files.sort()
+    scan_weights =[]
+    for i in range(0, len(all_labels_files)):
+        filename = all_labels_files[i]
+        # check filename is string
+        if not isinstance(filename, str):
+            raise TypeError("Filename should be string type, "
+                            "but was {type}".format(type=str(type(filename))))
+
+        # check extension is a laserscan
+        if not filename.endswith(".label"):
+            raise RuntimeError("Filename extension is not valid label file.")
+
+        # if all goes well, open label
+        labels = np.fromfile(filename, dtype=np.int32)
+        labels = labels.reshape((-1))
+        labels = labels & 0xFFFF
+        label_types, nums = np.unique(labels, return_counts=True)
+        weight = 0
+        for label_type, num in zip(label_types, nums):
+            if class_weights[label_type] != 0:
+                weight += num * 1/class_weights[label_type]
+        weight /= labels.shape[0]
+        scan_weights.append(np.round(weight)**2)
+    return scan_weights
 
 
 class SemanticKitti(Dataset):
@@ -26,7 +158,8 @@ class SemanticKitti(Dataset):
                learning_map_inv,    # inverse of previous (recover labels)
                sensor,              # sensor to parse scans from
                max_points=150000,   # max number of points present in dataset
-               gt=True):            # send ground truth?
+               gt=True,             # send ground truth?
+               transform=None):
     # save deats
     self.root = os.path.join(root, "sequences")
     self.sequences = sequences
@@ -45,6 +178,7 @@ class SemanticKitti(Dataset):
     self.sensor_fov_down = sensor["fov_down"]
     self.max_points = max_points
     self.gt = gt
+    self.transform = transform
 
     # get number of classes (can't be len(self.learning_map) because there
     # are multiple repeated entries, so the number that matters is how many
@@ -130,6 +264,8 @@ class SemanticKitti(Dataset):
 
     # open and obtain scan
     scan.open_scan(scan_file)
+    if self.transform:
+        scan = self.transform(scan)
     if self.gt:
       scan.open_label(label_file)
       # map unused classes to used classes (also for projection)
@@ -229,7 +365,11 @@ class Parser():
                batch_size,        # batch size for train and val
                workers,           # threads to load data
                gt=True,           # get gt?
-               shuffle_train=True):  # shuffle training set?
+               shuffle_train=True, # shuffle training set?
+               weighted_data=False,
+               label_weights=None,
+               data_augmentation=False,
+               augmentation_params=None):
     super(Parser, self).__init__()
 
     # if I am training, get the dataset
@@ -252,6 +392,49 @@ class Parser():
     self.nclasses = len(self.learning_map_inv)
 
     # Data loading code
+    transformations = []
+    if data_augmentation:
+        if augmentation_params["height_change"]["use"]:
+            # Add height/altitude change data augmentation
+            height_params = augmentation_params["height_change"]["params"]
+            height_diff = height_params["max_height_diff"]
+            angle_diff = height_params["max_angle_diff"]
+            augment_prob = height_params["probability"]
+            print("Using Data Augmentatation with height diff: {height}, "
+                  "angle diff: {angle} and augm prog: {prob}".format(height=height_diff, angle=angle_diff,
+                                                                     prob=augment_prob))
+            height_transform = HeightChange((height_diff, angle_diff, augment_prob, self.color_map))
+            transformations.append(height_transform)
+        if augmentation_params["flip"]["use"]:
+            # Add flip data augmentation
+            flip_prob = augmentation_params["flip"]["params"]["probability"]
+            flip_transform = Flip((flip_prob, self.color_map))
+            transformations.append(flip_transform)
+            print("Using Flip Augmentatation with probability: {prob}".format(prob=flip_prob))
+        if augmentation_params["translate"]["use"]:
+            # Add translate data augmentation
+            # TODO: create a more general translate data augmentation (merging translate and height change)
+            transl_params = augmentation_params["translate"]["params"]
+            random_augment =  transl_params["augment"]
+            if random_augment:
+                x_diff =  transl_params["x"]
+                z_diff = transl_params["z"]
+                angle_diff = transl_params["angle"]
+            else:
+                x_diff =  0
+                z_diff = 0
+                angle_diff = 0
+            translation = Translate((random_augment, x_diff, z_diff, angle_diff))
+            transformations.append(translation)
+            print("Using Translate Augmentatation with: random_aug: {aug}, x_diff: {x}, z_diff: {z},"
+                  " angle_diff: {angle}".format(aug=random_augment, x=x_diff,z=z_diff, angle=angle_diff))
+        if len(transformations) == 0:
+            print("Data augmentation is True, but no data augmentation type is given.")
+            train_transformations = None
+        else:
+            train_transformations =  transform=transforms.Compose(transformations)
+    else:
+        train_transformations = None
     self.train_dataset = SemanticKitti(root=self.root,
                                        sequences=self.train_sequences,
                                        labels=self.labels,
@@ -260,17 +443,34 @@ class Parser():
                                        learning_map_inv=self.learning_map_inv,
                                        sensor=self.sensor,
                                        max_points=max_points,
+                                       transform=train_transformations,
                                        gt=self.gt)
-
-    self.trainloader = torch.utils.data.DataLoader(self.train_dataset,
-                                                   batch_size=self.batch_size,
-                                                   shuffle=self.shuffle_train,
-                                                   num_workers=self.workers,
-                                                   pin_memory=True,
-                                                   drop_last=True)
+    if weighted_data:
+        scan_weights = get_scan_weights(root, train_sequences, label_weights)
+        label_types, nums = np.unique(scan_weights, return_counts=True)
+        scan_weights = torch.tensor(scan_weights)
+        weights_summary =  {label_type: num for label_type, num in zip(label_types, nums)}
+        print("Using weighted sampling with: Scan weights:\n {}".format(weights_summary))
+        sampler = WeightedRandomSampler(scan_weights, len(scan_weights), replacement=True)
+        self.trainloader = torch.utils.data.DataLoader(self.train_dataset,
+                                                       batch_size=self.batch_size,
+                                                       sampler=sampler,
+                                                       num_workers=self.workers,
+                                                       pin_memory=True,
+                                                       drop_last=True)
+    else:
+        self.trainloader = torch.utils.data.DataLoader(self.train_dataset,
+                                                       batch_size=self.batch_size,
+                                                       shuffle=self.shuffle_train,
+                                                       num_workers=self.workers,
+                                                       pin_memory=True,
+                                                       drop_last=True)
     assert len(self.trainloader) > 0
     self.trainiter = iter(self.trainloader)
-
+    if augmentation_params is not None and augmentation_params["translate"]["use"]:
+        valid_transformations = transforms.Compose([Translate((False, 0, 0, 0))])
+    else:
+        valid_transformations = None
     self.valid_dataset = SemanticKitti(root=self.root,
                                        sequences=self.valid_sequences,
                                        labels=self.labels,
@@ -279,8 +479,8 @@ class Parser():
                                        learning_map_inv=self.learning_map_inv,
                                        sensor=self.sensor,
                                        max_points=max_points,
+                                       transform=valid_transformations,
                                        gt=self.gt)
-
     self.validloader = torch.utils.data.DataLoader(self.valid_dataset,
                                                    batch_size=self.batch_size,
                                                    shuffle=False,
@@ -289,7 +489,6 @@ class Parser():
                                                    drop_last=True)
     assert len(self.validloader) > 0
     self.validiter = iter(self.validloader)
-
     if self.test_sequences:
       self.test_dataset = SemanticKitti(root=self.root,
                                         sequences=self.test_sequences,
@@ -309,6 +508,7 @@ class Parser():
                                                     drop_last=True)
       assert len(self.testloader) > 0
       self.testiter = iter(self.testloader)
+
 
   def get_train_batch(self):
     scans = self.trainiter.next()
