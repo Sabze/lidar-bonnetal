@@ -1,0 +1,81 @@
+# This file is covered by the LICENSE file in the root of this project.
+name: "kitti"
+labels: 
+  0 : "unlabeled"
+  1 : "outlier"
+  10: "car"
+  30: "person"
+  40: "road"
+  49: "other-ground"
+  52: "other-structure"
+  70: "vegetation"
+
+color_map: # bgr
+  0 : [0, 0, 0]
+  1 : [0, 0, 255]
+  10: [245, 150, 100]
+  30: [30, 30, 255]
+  40: [255, 0, 255]
+  49: [75, 0, 175]
+  52: [0, 150, 255]
+  70: [0, 175, 0]
+
+content: # as a ratio with the total number of points
+  0: 0.00623104784216
+  1: 1.10e-06
+  10: 0.015072482312034
+  30: 0.001293233319853
+  40: 0.005424783001796
+  49: 0.831122882176646
+  52: 0.002718907803439
+  70: 0.13813556775592
+
+#OLD
+#content: # as a ratio with the total number of points
+#  0: 0.007054228289655136
+#  1: 7.578553946903249e-07
+#  10: 0.01159465843374707
+#  30: 0.0008940004555541927
+#  40: 0.007004412540931573
+#  49: 0.8323624392109286
+#  52: 0.0015238005046932387
+#  70: 0.13956570270909724
+
+# classes that are indistinguishable from single scan or inconsistent in
+# ground truth are mapped to their closest equivalent
+learning_map:
+  0 : 0     # "unlabeled"
+  1 : 0     # "outlier" mapped to "unlabeled" --------------------------mapped
+  10: 1     # "car"
+  30: 2     # "person"
+  40: 3     # "road" to "other-ground" ----------------------------mapped
+  49: 3    # "other-ground"
+  52: 4     # "other-structure"
+  70: 5    # "vegetation"
+learning_map_inv: # inverse of previous map
+  0: 0      # "unlabeled", and others ignored
+  1: 10     # "car"
+  2: 30     # "person"
+  3: 49     # "other-ground"
+  4: 52     # ""other-structure"
+  5: 70     # "vegetation"
+learning_ignore: # Ignore classes
+  0: True      # "unlabeled", and others ignored
+  1: False     # "car"
+  2: False    # "person"
+  3: False     # "other-ground"
+  4: False     # ""other-structure"
+  5: False      # "vegetation"
+split: # sequence numbers
+  train:
+    - 0
+    - 1
+    - 2
+    - 10
+    - 11
+    - 20
+  valid:
+    - 12
+    - 21
+  test:
+    - 22

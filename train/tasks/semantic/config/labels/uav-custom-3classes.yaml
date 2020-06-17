@@ -1,0 +1,69 @@
+# This file is covered by the LICENSE file in the root of this project.
+name: "kitti"
+labels: 
+  0 : "unlabeled"
+  1 : "outlier"
+  10: "car"
+  30: "person"
+  40: "road"
+  49: "other-ground"
+  52: "other-structure"
+  70: "vegetation"
+
+color_map: # bgr
+  0 : [0, 0, 0]
+  1 : [0, 0, 255]
+  10: [245, 150, 100]
+  30: [30, 30, 255]
+  40: [255, 0, 255]
+  49: [75, 0, 175]
+  52: [0, 150, 255]
+  70: [0, 175, 0]
+content: # as a ratio with the total number of points
+  0: 0.007295448002601485
+  1: 4.298773202876369e-07
+  10: 0.005916517295320362
+  30: 0.00034988707122796044
+  40: 0.011653908018025483
+  49: 0.8580095701273092
+  52: 0.0005212262508487597
+  70: 0.1162530133573465
+
+# classes that are indistinguishable from single scan or inconsistent in
+# ground truth are mapped to their closest equivalent
+learning_map:
+  0 : 0     # "unlabeled"
+  1 : 0     # "outlier" mapped to "unlabeled" --------------------------mapped
+  10: 1     # "car"
+  30: 1     # "person"
+  40: 3     # "road" to "other-ground" ----------------------------mapped
+  49: 3    # "other-ground"
+  52: 1     # "other-structure"
+  70: 2    # "vegetation"
+learning_map_inv: # inverse of previous map
+  0: 0      # "unlabeled", and others ignored
+  1: 52     # "car"
+  2: 70     # "person"
+  3: 49     # "other-ground"
+#  4: 52     # ""other-structure"
+#  5: 70     # "vegetation"
+learning_ignore: # Ignore classes
+  0: True      # "unlabeled", and others ignored
+  1: False     # "anomali" (car+ person + structure)
+  2: False    # "vegetation"
+  3: False     # "other-ground"
+#  4: False     # ""other-structure"
+#  5: False      # "vegetation"
+split: # sequence numbers
+  train:
+    - 0
+    - 1
+    - 2
+    - 10
+    - 11
+    - 20
+  valid:
+    - 12
+    - 21
+  test:
+    - 22
