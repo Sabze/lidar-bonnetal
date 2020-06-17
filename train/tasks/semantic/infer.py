@@ -35,6 +35,20 @@ if __name__ == '__main__':
       default=None,
       help='Directory to get the trained model.'
   )
+
+  parser.add_argument(
+      '--data_cfg', '-dc',
+      type=str,
+      required=False,
+      default=None,
+      help='Specify if you want to use a different data config file than the one in the model directory',
+  )
+
+  parser.add_argument(
+      '--save_pred_probs',
+      action='store_true',
+      help='Specify if you want to save prediction probabilities.'
+  )
   FLAGS, unparsed = parser.parse_known_args()
 
   # print summary of what we will do
@@ -58,14 +72,20 @@ if __name__ == '__main__':
     quit()
 
   # open data config file
+  if FLAGS.data_cfg is None:
+    data_cfg_file = FLAGS.model + "/data_cfg.yaml"
+  else:
+    data_cfg_file = FLAGS.data_cfg
   try:
-    print("Opening data config file from %s" % FLAGS.model)
-    DATA = yaml.safe_load(open(FLAGS.model + "/data_cfg.yaml", 'r'))
+    print("Opening data config file from %s" % data_cfg_file)
+    DATA = yaml.safe_load(open(data_cfg_file, 'r'))
   except Exception as e:
     print(e)
     print("Error opening data yaml file.")
     quit()
 
+  save_pred_probs = FLAGS.save_pred_probs
+  print("Save probabilities: ", save_pred_probs)
   # create log folder
   try:
     if os.path.isdir(FLAGS.log):
@@ -77,16 +97,23 @@ if __name__ == '__main__':
       print("train", seq)
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq))
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
+      if save_pred_probs:
+        print("Saving prediction probabilities")
+        os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "probabilities"))
     for seq in DATA["split"]["valid"]:
       seq = '{0:02d}'.format(int(seq))
       print("valid", seq)
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq))
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
+      if save_pred_probs:
+        os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "probabilities"))
     for seq in DATA["split"]["test"]:
       seq = '{0:02d}'.format(int(seq))
       print("test", seq)
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq))
       os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "predictions"))
+      if save_pred_probs:
+        os.makedirs(os.path.join(FLAGS.log, "sequences", seq, "probabilities"))
   except Exception as e:
     print(e)
     print("Error creating log directory. Check permissions!")
@@ -106,4 +133,4 @@ if __name__ == '__main__':
 
   # create user and infer dataset
   user = User(ARCH, DATA, FLAGS.dataset, FLAGS.log, FLAGS.model)
-  user.infer()
+  user.infer(save_pred_probs)

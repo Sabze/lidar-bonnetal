@@ -34,6 +34,15 @@ class User():
     parserModule = imp.load_source("parserModule",
                                    booger.TRAIN_PATH + '/tasks/semantic/dataset/' +
                                    self.DATA["name"] + '/parser.py')
+    if self.ARCH["data_augmentation"]["use"] and self.ARCH["data_augmentation"]["params"]["translate"]["use"]:
+        # Hack, we dont want to use random data augmentations when running inference.
+        augm_params = {key: {"use": False} for (key, item) in self.ARCH["data_augmentation"]["params"].items()}
+        augm_params["translate"]["use"] = True
+        augm_params["translate"]["params"] = {"augment": False}
+        augm = True
+    else:
+        augm_params = None
+        augm = False
     self.parser = parserModule.Parser(root=self.datadir,
                                       train_sequences=self.DATA["split"]["train"],
                                       valid_sequences=self.DATA["split"]["valid"],
@@ -47,7 +56,9 @@ class User():
                                       batch_size=1,
                                       workers=self.ARCH["train"]["workers"],
                                       gt=True,
-                                      shuffle_train=False)
+                                      shuffle_train=False,
+                                      data_augmentation= augm,
+                                      augmentation_params=augm_params)
 
     # concatenate the encoder and the head
     with torch.no_grad():
@@ -72,23 +83,23 @@ class User():
       self.gpu = True
       self.model.cuda()
 
-  def infer(self):
+  def infer(self, save_pred_probs=False):
     # do train set
     self.infer_subset(loader=self.parser.get_train_set(),
-                      to_orig_fn=self.parser.to_original)
+                      to_orig_fn=self.parser.to_original, save_pred_probs=save_pred_probs)
 
     # do valid set
     self.infer_subset(loader=self.parser.get_valid_set(),
-                      to_orig_fn=self.parser.to_original)
+                      to_orig_fn=self.parser.to_original, save_pred_probs=save_pred_probs)
     # do test set
     self.infer_subset(loader=self.parser.get_test_set(),
-                      to_orig_fn=self.parser.to_original)
+                      to_orig_fn=self.parser.to_original, save_pred_probs=save_pred_probs)
 
     print('Finished Infering')
 
     return
 
-  def infer_subset(self, loader, to_orig_fn):
+  def infer_subset(self, loader, to_orig_fn, save_pred_probs=False):
     # switch to evaluate mode
     self.model.eval()
 
@@ -152,3 +163,9 @@ class User():
         path = os.path.join(self.logdir, "sequences",
                             path_seq, "predictions", path_name)
         pred_np.tofile(path)
+        if save_pred_probs:
+            prob_path = os.path.join(self.logdir, "sequences",
+                                path_seq, "probabilities", path_name.split(".")[0])
+            unproj_output = proj_output[0][:, p_y, p_x]
+            probs = unproj_output.cpu().numpy()
+            np.save(prob_path, probs.T)

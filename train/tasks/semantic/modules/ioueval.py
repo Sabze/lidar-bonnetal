@@ -70,6 +70,12 @@ class iouEval:
     fn = conf.sum(dim=0) - tp
     return tp, fp, fn
 
+  def getConf(self):
+    conf = self.conf_matrix.clone()
+    conf[self.ignore] = 0
+    conf[:, self.ignore] = 0
+    return conf
+
   def getIoU(self):
     tp, fp, fn = self.getStats()
     intersection = tp
@@ -85,6 +91,18 @@ class iouEval:
     acc_mean = total_tp / total
     return acc_mean  # returns "acc mean"
 
+  def getrecall(self):
+    tp, fp, fn = self.getStats()
+    total = tp + fn + 1e-15
+    recall = tp.sum() / total[self.include].sum()
+    recall_mean = (tp[self.include] / total[self.include]).mean()
+    return recall_mean, recall  # returns "acc mean"
+
+  def getMeanAcc(self):
+    tp, fp, fn = self.getStats()
+    total = tp + fp + 1e-15
+    acc_mean = (tp[self.include] / total[self.include]).mean()
+    return acc_mean  # returns "acc mean"
 
 class biouEval(iouEval):
   def __init__(self, n_classes, device, ignore=None, border_size=1, kern_conn=4):

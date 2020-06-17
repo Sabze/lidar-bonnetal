@@ -15,6 +15,53 @@ from common.laserscan import SemLaserScan
 # possible splits
 splits = ["train", "valid", "test"]
 
+
+def np_float_array_to_str(onedarray):
+    res = ["{:16.4f}".format(value) for value in onedarray]
+    return ",".join(res)
+
+def np_array_to_str(onedarray):
+    res = ["{:16d}".format(value) for value in onedarray]
+    res.append("{:16d}".format(np.sum(onedarray)))
+    return ",".join(res)
+
+def print_conf_matrix(conf_matrix, class_jaccard):
+    # Print the confusion matrix
+    print("CONFUSION MATRIX:")
+    header = "Class (Pred\GT) , "
+    for i in range(0, len(class_jaccard)):
+        header += "{class_str:>16},".format(class_str=class_strings[class_inv_remap[i]])
+    header += "{class_str:>16}".format(class_str="Total")
+    print("[{header:}]".format(header=header))
+    for i in range(0, len(class_jaccard)):
+        values = np_array_to_str(conf_matrix.numpy()[i, :])
+        print("[{name:<16}, {matrix_val:}]".format(name=class_strings[class_inv_remap[i]], matrix_val=values))
+
+
+    conf_np = conf_matrix.numpy()
+    ground_truth_tot = np.sum(conf_np, axis=0)
+    gt_str = np_array_to_str(ground_truth_tot)
+    print("[{name:<16}, {matrix_val:}]\n".format(name="Total", matrix_val=gt_str))
+
+    # Answers the question 'Of the points that actually were class X, how many of these were predicted as class Y?'"
+    freq_conf_matrix = conf_np /ground_truth_tot
+    print("FREQ OF TP CONFUSION MATRIX:")
+    print("[{header:}]".format(header=header[:-2]))
+    for i in range(0, len(class_jaccard)):
+        values = np_float_array_to_str(freq_conf_matrix[i, :])
+        print("[{name:<16}, {matrix_val:}]".format(name=class_strings[class_inv_remap[i]], matrix_val=values))
+
+    # Answers the question 'Of all the points that were predicted as class X, how many of these were actually class Y?'"
+    pred_tot = np.sum(conf_np, axis=1)
+    freq_fp_conf_matrix = conf_np / pred_tot[:, None]
+    print("\nFREQ OF FP CONFUSION MATRIX:")
+    print("[{header:}]".format(header=header))
+    for i in range(0, len(class_jaccard)):
+        values = np_float_array_to_str(freq_fp_conf_matrix[i, :])
+        print("[{name:<16}, {matrix_val:}]".format(name=class_strings[class_inv_remap[i]], matrix_val=values))
+
+
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser("./evaluate_iou.py")
   parser.add_argument(
@@ -162,15 +209,13 @@ if __name__ == '__main__':
   # print(pred_names)
 
   # check that I have the same number of files
-  # print("labels: ", len(label_names))
-  # print("predictions: ", len(pred_names))
-  assert(len(label_names) == len(scan_names) and
-         len(label_names) == len(pred_names))
+  print("labels: ", len(label_names))
+  print("predictions: ", len(pred_names))
+  assert len(label_names) == len(scan_names) and len(label_names) == len(pred_names)
 
   print("Evaluating sequences: ")
   # open each file, get the tensor, and make the iou comparison
   for scan_file, label_file, pred_file in zip(scan_names, label_names, pred_names):
-    print("evaluating label ", label_file, "with", pred_file)
     # open label
     label = SemLaserScan(project=False)
     label.open_scan(scan_file)
@@ -192,17 +237,28 @@ if __name__ == '__main__':
 
   # when I am done, print the evaluation
   m_accuracy = evaluator.getacc()
+  m_recall, recall = evaluator.getrecall()
+  mean_acc = evaluator.getMeanAcc()
   m_jaccard, class_jaccard = evaluator.getIoU()
 
   print('Validation set:\n'
-        'Acc avg {m_accuracy:.3f}\n'
-        'IoU avg {m_jaccard:.3f}'.format(m_accuracy=m_accuracy,
-                                         m_jaccard=m_jaccard))
+        'Acc {m_accuracy:.4f}\n'
+        'Recall {recall:.4f}\n'
+        'mAcc {mean_accuracy:.4f}\n'
+        'mRecall {mrecall:.4f}\n'
+        'IoU avg {m_jaccard:.3f}'.format(m_accuracy=m_accuracy, mean_accuracy=mean_acc, mrecall=m_recall,
+                                         m_jaccard=m_jaccard, recall=recall))
   # print also classwise
   for i, jacc in enumerate(class_jaccard):
     if i not in ignore:
       print('IoU class {i:} [{class_str:}] = {jacc:.3f}'.format(
           i=i, class_str=class_strings[class_inv_remap[i]], jacc=jacc))
+
+
+  # Confusion matrix
+  print("*" * 80)
+  conf_matrix = evaluator.conf_matrix
+  print_conf_matrix(conf_matrix, class_jaccard)
 
   # print for spreadsheet
   print("*" * 80)
@@ -210,9 +266,10 @@ if __name__ == '__main__':
   for i, jacc in enumerate(class_jaccard):
     if i not in ignore:
       sys.stdout.write('{jacc:.3f}'.format(jacc=jacc.item()))
-      sys.stdout.write(",")
+      sys.stdout.write(" & ")
   sys.stdout.write('{jacc:.3f}'.format(jacc=m_jaccard.item()))
   sys.stdout.write(",")
   sys.stdout.write('{acc:.3f}'.format(acc=m_accuracy.item()))
   sys.stdout.write('\n')
   sys.stdout.flush()
+
