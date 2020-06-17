@@ -7,12 +7,14 @@ class LaserScan:
   """Class that contains LaserScan with x,y,z,r"""
   EXTENSIONS_SCAN = ['.bin']
 
-  def __init__(self, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0):
+  def __init__(self, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0, h_flip=False, v_flip=False):
     self.project = project
     self.proj_H = H
     self.proj_W = W
     self.proj_fov_up = fov_up
     self.proj_fov_down = fov_down
+    self.h_flip = h_flip
+    self.v_flip = v_flip
     self.reset()
 
   def reset(self):
@@ -104,7 +106,19 @@ class LaserScan:
     if self.project:
       self.do_range_projection()
 
-  def do_range_projection(self):
+  def overwrite_points(self, points, remissions=None):
+    """ Set scan attributes (instead of opening from file)
+    """
+    # reset just in case there was an open structure
+
+    # check scan makes sense
+    if not isinstance(points, np.ndarray):
+      raise TypeError("Scan should be numpy array")
+
+    # put in attribute
+    self.points = points  # get xyz
+
+  def do_range_projection(self, center_angle=0, horizontal_fov = np.pi):
     """ Project a pointcloud into a spherical projection image.projection.
         Function takes no arguments because it can be also called externally
         if the value of the constructor was not set (in case you change your
@@ -128,7 +142,12 @@ class LaserScan:
     pitch = np.arcsin(scan_z / depth)
 
     # get projections in image coords
-    proj_x = 0.5 * (yaw / np.pi + 1.0)          # in [0.0, 1.0]
+
+    # 360 degree Horizontal field of view
+    #proj_x = 0.5 * (yaw / np.pi + 1.0)          # in [0.0, 1.0]
+
+    # 180 degree Horizontal field of view
+    proj_x = yaw / np.pi + 0.5
     proj_y = 1.0 - (pitch + abs(fov_down)) / fov        # in [0.0, 1.0]
 
     # scale to image size using angular resolution
@@ -139,11 +158,15 @@ class LaserScan:
     proj_x = np.floor(proj_x)
     proj_x = np.minimum(self.proj_W - 1, proj_x)
     proj_x = np.maximum(0, proj_x).astype(np.int32)   # in [0,W-1]
+    if self.v_flip:
+      proj_x = (self.proj_W - 1) - proj_x
     self.proj_x = np.copy(proj_x)  # store a copy in orig order
 
     proj_y = np.floor(proj_y)
     proj_y = np.minimum(self.proj_H - 1, proj_y)
     proj_y = np.maximum(0, proj_y).astype(np.int32)   # in [0,H-1]
+    if self.h_flip:
+      proj_y = (self.proj_H - 1) - proj_y
     self.proj_y = np.copy(proj_y)  # stope a copy in original order
 
     # copy of depth in original order
@@ -171,8 +194,9 @@ class SemLaserScan(LaserScan):
   """Class that contains LaserScan with x,y,z,r,sem_label,sem_color_label,inst_label,inst_color_label"""
   EXTENSIONS_LABEL = ['.label']
 
-  def __init__(self,  sem_color_dict=None, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0, max_classes=300):
-    super(SemLaserScan, self).__init__(project, H, W, fov_up, fov_down)
+  def __init__(self,  sem_color_dict=None, project=False, H=64, W=1024, fov_up=3.0, fov_down=-25.0, max_classes=300,
+               h_flip=False, v_flip=False):
+    super(SemLaserScan, self).__init__(project, H, W, fov_up, fov_down, h_flip, v_flip)
     self.reset()
 
     # make semantic colors
